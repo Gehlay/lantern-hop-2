@@ -1,6 +1,6 @@
 // Lantern Hop service worker: makes the app work offline.
 // Bump CACHE_VERSION whenever you change index.html so players get the update.
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const CACHE = 'lantern-hop-' + CACHE_VERSION;
 const FONT_CACHE = 'lantern-hop-fonts';
 
