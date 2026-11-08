@@ -768,11 +768,11 @@ function stepEnemy(e){
  if(solid(tx,ty)||!solid(tx,ty+1))e.d*=-1;else e.x=nx;
 }
 
-/* camera: follow speed, look-ahead and dead zone all come from Settings > Camera */
+/* camera: follow speed, look-ahead and dead zone all come from Settings > Gameplay */
 var CAMSP=[.07,.12,.22,1],CAMLK=[0,36,80],CAMDZ=[0,22,52];
 function camStep(){
  camLook+=(Math.max(-1,Math.min(1,P.vx/3.4))*CAMLK[S.look]-camLook)*.05;
- var d=P.x+P.w/2+camLook-VW/2-cam,z=CAMDZ[S.dz];
+ var d=P.x+P.w/2+P.vx/CAMSP[S.cam]+camLook-VW/2-cam,z=CAMDZ[S.dz];
  d=Math.abs(d)<=z?0:d-Math.sign(d)*z;
  cam=Math.max(0,Math.min(W*T-VW,cam+d*CAMSP[S.cam]));
 }
@@ -836,14 +836,74 @@ stomp:function(){tone(220,80,.15,'sawtooth',.1);},die:function(){tone(400,60,.4,
 win:function(){[523,659,784,1047].forEach(function(f,i){setTimeout(function(){tone(f,f*1.01,.22,'triangle',.12);},i*120);});}};
 var music=new Audio();music.loop=true;music.volume=0.45;music.preload='auto';var musicReady=false;
 function loadMusic(){if(musicReady)return;musicReady=true;try{var el=document.getElementById('lhm'),bin=atob(el.textContent.trim()),u=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);music.src=URL.createObjectURL(new Blob([u],{type:'audio/mpeg'}));}catch(e){}}
-var musicOn=false;
-function syncMusic(){
- var want=!!S.music&&(state==='play'||state==='done')&&!document.hidden;
- if(want===musicOn)return;
- musicOn=want;
- try{if(want){loadMusic();var p=music.play();if(p&&p.catch)p.catch(function(){musicOn=false;});}else music.pause();}catch(e){musicOn=false;}
+var musicOn=false,gmOn=false;
+/* in-level music: original synth tunes, one per level (boss levels get their own). The recorded track plays on the main menu. */
+var SONGS=[
+ {bpm:112,root:60,sc:[0,2,4,7,9],pr:[[0,0],[9,1],[5,0],[7,0]],lead:'triangle',lv:.2},
+ {bpm:122,root:62,sc:[0,2,4,7,9],pr:[[0,0],[7,0],[9,1],[5,0]],lead:'square',lv:.11},
+ {bpm:100,root:57,sc:[0,3,5,7,10],pr:[[0,1],[8,0],[3,0],[10,0]],lead:'triangle',lv:.2},
+ {bpm:148,root:52,sc:[0,3,5,7,10],pr:[[0,1],[8,0],[10,0],[7,0]],lead:'sawtooth',lv:.09,boss:1}
+];
+var GM={g:null,sng:null,key:-1,t:0,step:0,mel:[],id:0,nz:null};
+function mtof(m){return 440*Math.pow(2,(m-69)/12);}
+function gmRng(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+var GMVOL=function(){return 1;};
+function gmVol(){if(GM.g&&gmOn)GM.g.gain.value=.5*GMVOL();}
+function gmNote(f,t,d,type,v){var a=AC,o=a.createOscillator(),g=a.createGain();o.type=type;o.frequency.value=f;g.gain.setValueAtTime(.0001,t);g.gain.linearRampToValueAtTime(v,t+.012);g.gain.exponentialRampToValueAtTime(.0001,t+d);o.connect(g);g.connect(GM.g);o.start(t);o.stop(t+d+.03);}
+function gmNoise(t,d,v,hp){var a=AC;if(!GM.nz){var n=Math.floor(a.sampleRate*.4),b=a.createBuffer(1,n,a.sampleRate),q=b.getChannelData(0);for(var i=0;i<n;i++)q[i]=Math.random()*2-1;GM.nz=b;}
+ var o=a.createBufferSource(),g=a.createGain(),f=a.createBiquadFilter();o.buffer=GM.nz;f.type='highpass';f.frequency.value=hp;g.gain.setValueAtTime(v,t);g.gain.exponentialRampToValueAtTime(.0001,t+d);o.connect(f);f.connect(g);g.connect(GM.g);o.start(t);o.stop(t+d+.02);}
+function gmKick(t){var a=AC,o=a.createOscillator(),g=a.createGain();o.type='sine';o.frequency.setValueAtTime(150,t);o.frequency.exponentialRampToValueAtTime(45,t+.12);g.gain.setValueAtTime(.55,t);g.gain.exponentialRampToValueAtTime(.0001,t+.14);o.connect(g);g.connect(GM.g);o.start(t);o.stop(t+.16);}
+function gmMelody(sng,seed){
+ var r=gmRng(seed),sc=[],mel=[],idx=2,oct,i;
+ for(oct=0;oct<2;oct++)sng.sc.forEach(function(d){sc.push(sng.root+d+12*oct);});
+ for(i=0;i<64;i++){
+  var bar=Math.floor(i/8)%4;
+  if(i%8===0){var cr=(sng.root+sng.pr[bar][0])%12,best=idx,bd=99;
+   sc.forEach(function(m,j){var d=Math.abs(m%12-cr);d=Math.min(d,12-d);if(d<bd||(d===bd&&Math.abs(j-idx)<Math.abs(best-idx))){bd=d;best=j;}});
+   idx=best;mel.push(sc[idx]);continue;}
+  if(r()<.28){mel.push(null);continue;}
+  idx+=[-2,-1,-1,0,1,1,2][Math.floor(r()*7)];idx=Math.max(0,Math.min(sc.length-1,idx));mel.push(sc[idx]);
+ }
+ return mel;
 }
-setInterval(function(){if(state==='play'&&S.music&&!musicOn)syncMusic();},3000);
+function gmTick(){
+ if(!gmOn||!AC)return;
+ var sng=GM.sng,sp=60/sng.bpm/4;
+ while(GM.t<AC.currentTime+.3){
+  var st=GM.step,t=GM.t,bar=Math.floor(st/16)%8,ch=sng.pr[bar%4],ib=st%16,cr=sng.root+ch[0],tn=[0,ch[1]?3:4,7],bm=cr-24;
+  if(bm<33)bm+=12;
+  if(ib%8===0)gmNote(mtof(bm),t,sp*7,'triangle',.55);
+  if(ib%2===0){var k=(ib/2)%4;gmNote(mtof(cr-12+tn[[0,1,2,1][k]]),t,sp*1.7,'square',.06);
+   var m=GM.mel[(st/2)%64];if(m!=null)gmNote(mtof(m),t,sp*2.3,sng.lead,sng.lv);}
+  if(ib%4===0)gmKick(t);
+  if(ib%8===4)gmNoise(t,.1,.22,1800);
+  if(sng.boss?true:ib%2===1)gmNoise(t,.03,.07,7000);
+  GM.t+=sp;GM.step++;
+ }
+}
+function gmStart(){
+ var a=ac();if(!a)return;
+ var key=Math.max(0,lvl|0),bossLv=!!(LV[lvl]&&LV[lvl].boss),si=bossLv?3:key%3;
+ if(!GM.g){GM.g=a.createGain();GM.g.connect(a.destination);}
+ if(GM.key!==key||!GM.sng){GM.key=key;GM.sng=SONGS[si];GM.mel=gmMelody(GM.sng,1000+key*7);GM.step=0;}
+ if(gmOn)return;
+ gmOn=true;GM.g.gain.cancelScheduledValues(a.currentTime);GM.g.gain.value=.5*GMVOL();
+ GM.t=a.currentTime+.08;clearInterval(GM.id);GM.id=setInterval(gmTick,90);gmTick();
+}
+function gmStop(){
+ gmOn=false;clearInterval(GM.id);
+ if(GM.g&&AC){GM.g.gain.cancelScheduledValues(AC.currentTime);GM.g.gain.setTargetAtTime(0,AC.currentTime,.04);}
+}
+function syncMusic(){
+ var vis=!!S.music&&!document.hidden;
+ var wantR=vis&&state==='menu'&&inSplash===false,wantG=vis&&(state==='play'||state==='done');
+ if(wantR!==musicOn){
+  musicOn=wantR;
+  try{if(wantR){loadMusic();var p=music.play();if(p&&p.catch)p.catch(function(){musicOn=false;});}else music.pause();}catch(e){musicOn=false;}
+ }
+ if(wantG){try{if(GM.key!==Math.max(0,lvl|0)&&gmOn)gmStop();gmStart();}catch(e){gmOn=false;}}else if(gmOn)gmStop();
+}
+setInterval(function(){if(S.music&&((state==='menu'&&inSplash===false&&!musicOn)||(state==='play'&&!gmOn)))syncMusic();},3000);
 
 /* ================= character drawing ================= */
 var CH={
@@ -1067,9 +1127,11 @@ function screen(title,text,items,focus,extra){
 }
 var resets=[];
 function resetInput(){keys.l=keys.r=keys.j=0;keys.jp=false;for(var i=0;i<resets.length;i++)resets[i]();}
+var hasPaused=false;
+function contItem(){if(hasPaused)return['Continue \u00b7 Level '+(lvl+1),resume];var prog=PR.last>0||PR.unlocked>0||PR.xp>0||PR.tc>0||PR.wal>0;return[prog?'Continue \u00b7 Level '+(PR.last+1):'Start',onStart];}
 function mainMenu(){state='menu';resetInput();syncMusic();
- screen('Lantern Hop','Collect the lanterns and reach the flag. Stomp the moths, dodge the spikes.',[[PR.last>0?'Continue \u00b7 Level '+(PR.last+1):'Start',onStart],['Level select',function(){levelSelect(mainMenu);},1],['Customize',function(){customize(mainMenu);},1],['Style',function(){STYLEF(mainMenu);},1],['Shop',function(){shop(mainMenu);},1],['Bestiary',function(){bestiary(mainMenu);},1],['Achievements',function(){achScreen(mainMenu);},1],['Skill tree'+spLbl(),function(){skills(mainMenu);},1],['Settings',function(){settings(mainMenu,0);},1],['Exit',exitGame,1]]);}
-function pauseMenu(){state='paused';resetInput();syncMusic();screen('Paused','Level '+(lvl+1)+' of '+LV.length,[['Resume',resume],['Restart level',function(){restartLevel();resume();},1],['Customize',function(){customize(pauseMenu);},1],['Style',function(){STYLEF(pauseMenu);},1],['Shop',function(){shop(pauseMenu);},1],['Bestiary',function(){bestiary(pauseMenu);},1],['Skill tree'+spLbl(),function(){skills(pauseMenu);},1],['Settings',function(){settings(pauseMenu,0);},1],['Main menu',mainMenu,1]]);}
+ screen('Lantern Hop','Collect the lanterns and reach the flag. Stomp the moths, dodge the spikes.',[contItem(),['Level select',function(){levelSelect(mainMenu);},1],['Customize',function(){customize(mainMenu);},1],['Style',function(){STYLEF(mainMenu);},1],['Shop',function(){shop(mainMenu);},1],['Bestiary',function(){bestiary(mainMenu);},1],['Achievements',function(){achScreen(mainMenu);},1],['Skill tree'+spLbl(),function(){skills(mainMenu);},1],['Settings',function(){settings(mainMenu,0);},1],['Exit',exitGame,1]]);}
+function pauseMenu(){state='paused';resetInput();syncMusic();screen('Paused','Level '+(lvl+1)+' of '+LV.length,[['Resume',resume],['Restart level',function(){restartLevel();resume();},1],['Customize',function(){customize(pauseMenu);},1],['Style',function(){STYLEF(pauseMenu);},1],['Shop',function(){shop(pauseMenu);},1],['Bestiary',function(){bestiary(pauseMenu);},1],['Skill tree'+spLbl(),function(){skills(pauseMenu);},1],['Settings',function(){settings(pauseMenu,0);},1],['Main menu',function(){hasPaused=true;mainMenu();},1]]);}
 function onStart(){if(!S.name.trim())customize(mainMenu,startGame);else startGame();}
 var settings;/* defined in the v12 settings menu below */
 function creator(back){
@@ -1193,7 +1255,7 @@ function customize(back,cont){
   ci.className=S.color==='custom'?'on':'';if(S.color==='custom')ci.style.borderColor='';
   drawThumbs();drawPreview();
  }
- var items=cont?[['Continue',function(){S.name=inp.value.slice(0,14);saveS();cont();}],['Back to menu',function(){back();},1]]:[['HUD & controls',function(){settings(function(){customize(back);},'Controls');},1],['Back to menu',function(){back();},1]];
+ var items=cont?[['Continue',function(){S.name=inp.value.slice(0,14);saveS();cont();}],['Back to menu',function(){back();},1]]:[['Back to menu',function(){back();}]];
  screen('Customize',cont?'Type your name, pick a character, then continue.':'Make your player your own.',items,0,[wrapEl]);
  ov.classList.add('sub');subBack=back;pv.style.display='block';refresh();
  if(!pvOn){pvOn=true;previewLoop();}
@@ -1202,8 +1264,8 @@ function customize(back,cont){
 
 /* ---------- game flow ---------- */
 function startGame(){lvl=Math.min(PR.last|0,PR.unlocked,LV.length-1);total=0;deaths=0;beginLevel();}
-function beginLevel(){ac();PR.last=lvl;saveP();camLook=0;withLoad('Level '+(lvl+1),function(){base=total;build(lvl);cam=0;hud();resume();toast('Level '+(lvl+1)+' \u00b7 '+Pal.name+(LV[lvl].boss?' \u00b7 Boss level!':''));});}
-function resume(){ac();resetInput();state='play';ov.classList.add('hide');stageIn();wrap.classList.remove('paged');last=0;acc=0;syncMusic();}
+function beginLevel(){ac();PR.last=lvl;saveP();camLook=0;withLoad('Level '+(lvl+1),function(){base=total;build(lvl);cam=Math.max(0,Math.min(W*T-VW,P.x+P.w/2-VW/2));hud();resume();toast('Level '+(lvl+1)+' \u00b7 '+Pal.name+(LV[lvl].boss?' \u00b7 Boss level!':''));});}
+function resume(){hasPaused=false;ac();resetInput();state='play';ov.classList.add('hide');stageIn();wrap.classList.remove('paged');last=0;acc=0;syncMusic();}
 function win(){
  SFX.win();resetInput();state='done';
  var cleared=!!PR.cl[lvl],perfect=coins.every(function(c){return c.got;}),ups=0,pts=0,
@@ -1243,7 +1305,7 @@ function kd(e,v){
 }
 var inSplash=true;
 function leaveSplash(){
- if(!inSplash)return;inSplash=false;ac();
+ if(!inSplash)return;inSplash=false;ac();syncMusic();
  var sp=$('splash');sp.classList.add('leave');document.body.classList.remove('splashing');
  setTimeout(function(){sp.style.display='none';var f=menuEl.children[0];if(f)f.focus({preventScroll:true});if(pv.style.display!=='none'&&!pvOn){pvOn=true;previewLoop();}},720);
 }
@@ -2050,6 +2112,7 @@ var CAN={left:'arrowleft',right:'arrowright',jump:' ',shoot:'x',melee:'z',dash:'
 var DGP={jump:0,shoot:2,melee:1,dash:5,pause:9};
 var st={};try{st=JSON.parse(localStorage.getItem(LS))||{};}catch(e){}
 var A=Object.assign({},DEF,st.a||{}),KBm=Object.assign({},st.kb||{}),GPm=Object.assign({},DGP,st.gp||{});
+GMVOL=function(){return A.mv/100*A.mu/100;};
 var WD=Object.assign({hair:0,hcol:'#5a3a2e',outfit:0,ocol:'#6fa8ff',dress:0,shoes:0,acc:0,wings:0,crown:0,magic:0},st.wd||{});
 if(!st.a&&window.matchMedia&&matchMedia('(prefers-reduced-motion:reduce)').matches){A.shake=0;A.flash=0;}
 function save(){try{localStorage.setItem(LS,JSON.stringify({a:A,kb:KBm,gp:GPm,wd:WD}));}catch(e){}}
@@ -2290,22 +2353,21 @@ function applyUI(){
  document.documentElement.style.fontSize=[100,115,130][A.ts]+'%';
  document.body.classList.toggle('hc',!!A.hc);document.body.classList.toggle('notips',!A.tut);
  stage.style.filter=A.cb==='gray'?'grayscale(1)':A.cb==='none'?'':'url(#v12-'+A.cb+')';
- music.volume=.45*A.mv/100*A.mu/100;
+ music.volume=.45*A.mv/100*A.mu/100;gmVol();
 }
 
 /* ---------- full settings menu ---------- */
 var SKEYS=['gfx','bri','theme','diff','hs','mm','ho','tag','touch','lefty','sens','fps','tod','cam','look','dz','bs','bo','pt'];
 var ONOFF=[[0,'Off'],[1,'On']],LMH=[[0,'Low'],[1,'Medium'],[2,'High']],INT=[[0,'Off'],[1,'Low'],[2,'Medium'],[3,'High']];
 var ROWS={
- Graphics:[
+ Display:[
   {l:'Resolution',t:'s',k:'gfx',o:[['low','Low'],['medium','Medium'],['hd','High']]},
   {l:'Quality',t:'d',k:'q',o:LMH},
   {l:'Fullscreen',t:'d',k:'full',o:ONOFF},
   {l:'Screen shake',t:'a',k:'shake',o:INT},
   {l:'Flash effects',t:'a',k:'flash',o:INT},
   {l:'Dash trails',t:'a',k:'trails',o:ONOFF},
-  {l:'Environment effects',t:'a',k:'env',o:ONOFF}],
- Display:[
+  {l:'Environment effects',t:'a',k:'env',o:ONOFF},
   {l:'Brightness',t:'s',k:'bri',r:[70,130,5,'%']},
   {l:'Screen mode',t:'d',k:'land',o:[[0,'Portrait'],[1,'Landscape']]},
   {l:'V-Sync',t:'a',k:'vs',o:ONOFF},
@@ -2325,8 +2387,7 @@ var ROWS={
  Gameplay:[
   {l:'Difficulty',t:'s',k:'diff',o:[[0,'Easy'],[1,'Normal'],[2,'Hard']]},
   {l:'Tutorials',t:'a',k:'tut',o:ONOFF},
-  {l:'Critical-hit alerts',t:'a',k:'crit',o:ONOFF}],
- Camera:[
+  {l:'Critical-hit alerts',t:'a',k:'crit',o:ONOFF},
   {l:'Follow speed',t:'s',k:'cam',o:[[0,'Smooth'],[1,'Normal'],[2,'Snappy'],[3,'Locked']]},
   {l:'Look-ahead',t:'s',k:'look',o:[[0,'Off'],[1,'Short'],[2,'Long']],n:'The camera leans toward the way you are running.'},
   {l:'Dead zone',t:'s',k:'dz',o:[[0,'Off'],[1,'Small'],[2,'Wide']],n:'The camera only moves once you leave the middle of the screen.'}],
@@ -2341,13 +2402,12 @@ var ROWS={
   {l:'HUD opacity',t:'s',k:'ho',o:[[0,'Faint'],[1,'Soft'],[2,'Solid']]},
   {l:'Minimap',t:'s',k:'mm',o:ONOFF},{l:'Damage numbers',t:'a',k:'dn',o:ONOFF},{l:'Name tag',t:'s',k:'tag',o:ONOFF},
   {l:'Portrait',t:'s',k:'pt',o:ONOFF},
-  {l:'HUD & button layout',btn:'hud'}],
- Language:[{l:'Language',t:'a',k:'lang',o:LANGS},{l:'Credits',btn:'cred'}]
+  {l:'Language',t:'a',k:'lang',o:LANGS},{l:'Credits',btn:'cred'}]
 };
-var CATS=['Graphics','Display','Audio','Controls','Gameplay','Camera','Accessibility','Interface','Language'];
+var CATS=['Display','Audio','Controls','Gameplay','Accessibility','Interface'];
 
 settings=function(back,cat0){
- var D={s:{},a:Object.assign({},A),q:S.part,land:land?1:0,full:document.fullscreenElement?1:0,kb:Object.assign({},KBm),gp:Object.assign({},GPm)},cat=typeof cat0==='string'?cat0:'Graphics';
+ var D={s:{},a:Object.assign({},A),q:S.part,land:land?1:0,full:document.fullscreenElement?1:0,kb:Object.assign({},KBm),gp:Object.assign({},GPm)},cat=typeof cat0==='string'&&ROWS[cat0]?cat0:'Display';
  SKEYS.forEach(function(k){D.s[k]=S[k];});
  var tabs=el('div','v12tabs'),panel=el('div','v12p'),note=el('p','note','');
  tabs.setAttribute('role','tablist');

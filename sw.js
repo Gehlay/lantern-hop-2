@@ -1,6 +1,6 @@
 // Lantern Hop service worker: makes the app work fully offline.
 // Bump CACHE_VERSION whenever you change any game file so players get the update.
-const CACHE_VERSION = 'v16';
+const CACHE_VERSION = 'v20';
 const CACHE = 'lantern-hop-' + CACHE_VERSION;
 
 const SHELL = [
